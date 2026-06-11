@@ -1,12 +1,3 @@
-"""
-2PL IRT TEST BOT — v5.6 (To'liq Web App Integratsiyasi & Avtomatlashtirilgan Hisobotlar)
-===================================================================
-- 1 dan 55 gacha barcha savollar yagona Web App oynasida ishlanadi.
-- Admin uchun test e'loni matni avtomatik generatsiya qilinadi.
-- O'quvchiga darhol to'g'ri javoblar soni ko'rsatiladi.
-- Admin uchun Rasch dinamik hisoblanadi va Excel (CSV) yuklash imkoniyati mavjud.
-"""
-
 import asyncio, csv, io, json, logging, math, os, sqlite3
 from datetime import datetime
 import numpy as np
@@ -28,7 +19,6 @@ log = logging.getLogger(__name__)
 TOKEN    = "8940355412:AAGgFXKlMt0MSfA0RVYH2gMq0d8C0MX37FU"
 ADMIN_ID = 880108541
 
-# 🟢 SIZNING SAYTINGIZ LINKI
 WEB_APP_URL = "https://boburjonabdullayev.github.io/test-platform2/" 
 
 TOTAL_QUESTIONS = 55
@@ -86,9 +76,6 @@ def db_run(q, p=()):
         con.rollback(); con.close(); raise e
     con.close(); return lid
 
-# ═══════════════════════════════════════════════════
-#  2PL IRT MODELI & AUTOMATIC REPORTING
-# ═══════════════════════════════════════════════════
 def prob_2pl(theta, alpha, beta):
     return 1.0 / (1.0 + np.exp(-alpha * (theta - beta)))
 
@@ -157,9 +144,6 @@ async def auto_rasch(bot: Bot, test_id: int, new_tg_id: int):
     ]
     await bot.send_message(ADMIN_ID, "\n".join(lines))
 
-# ═══════════════════════════════════════════════════
-#  BOT OPERATSIYALARI
-# ═══════════════════════════════════════════════════
 bot = Bot(token=TOKEN, default=DefaultBotProperties(parse_mode="HTML"))
 dp  = Dispatcher(storage=MemoryStorage())
 
@@ -214,7 +198,6 @@ async def admin_save_keys(msg: Message, state: FSMContext):
     db_run("INSERT INTO tests (code, name, n_questions, answer_key) VALUES (?, ?, 55, ?)", (data["test_code"], data["test_name"], json.dumps(final_keys)))
     await state.clear()
     
-    # 📢 Admin so'ragan maxsus reklama matni generatsiyasi
     reklama_matni = (
         f"✅ <b>Test ishlanishga tayyor</b>\n"
         f"🗒 <b>Test nomi:</b> {data['test_name']}\n"
@@ -228,9 +211,6 @@ async def admin_save_keys(msg: Message, state: FSMContext):
     )
     await msg.answer(reklama_matni, reply_markup=ReplyKeyboardRemove())
 
-# ═══════════════════════════════════════════════════
-#  EXCEL (CSV) EKSPORT / RESULTS
-# ═══════════════════════════════════════════════════
 @dp.message(Command("results"), F.from_user.id == ADMIN_ID)
 async def admin_results(msg: Message, command: CommandObject):
     if not command.args:
@@ -252,7 +232,6 @@ async def admin_results(msg: Message, command: CommandObject):
     matrix = [json.loads(r["binary_str"]) for r in resp]
     calc_res = irt_2pl_calc(matrix)
     
-    # UTF-8 BOM bilan CSV fayl yaratish (Excel to'g'ri o'qishi uchun)
     output = io.StringIO()
     output.write('\ufeff') 
     writer = csv.writer(output, delimiter=';')
@@ -273,9 +252,6 @@ async def admin_results(msg: Message, command: CommandObject):
     input_file = BufferedInputFile(file_data, filename=f"Natijalar_{t['code']}.csv")
     await msg.answer_document(input_file, caption=f"📊 <b>{t['name']}</b> testi bo'yicha yakuniy hisobot (Rasch 2PL).")
 
-# ═══════════════════════════════════════════════════
-#  O'QUVCHILAR BILAN ISHLASH
-# ═══════════════════════════════════════════════════
 @dp.message(Command("start"), F.from_user.id != ADMIN_ID)
 async def student_start(msg: Message, state: FSMContext):
     await state.clear(); await state.set_state(Student.enter_code)
@@ -303,7 +279,7 @@ async def student_name(msg: Message, state: FSMContext):
     await state.set_state(Student.wait_answers)
     
     kb = ReplyKeyboardMarkup(keyboard=[[KeyboardButton(text="📝 Imtihon Oynasini Ochish", web_app=WebAppInfo(url=WEB_APP_URL))]], resize_keyboard=True)
-    await msg.answer(f"✅ Rahmat, {name}! Hamma nursa tayyor.\n\n👇 Pastdagi tugmani bosing va imtihonni topshiring:", reply_markup=kb)
+    await msg.answer(f"✅ Rahmat, {name}! Hamma narsa tayyor.\n\n👇 Pastdagi tugmani bosing va imtihonni topshiring:", reply_markup=kb)
 
 @dp.message(Student.wait_answers, F.web_app_data)
 async def student_get_answers(msg: Message, state: FSMContext):
@@ -331,7 +307,6 @@ async def student_get_answers(msg: Message, state: FSMContext):
     
     await state.clear()
     
-    # 📝 O'quvchiga darhol to'g'ri ballarini ko'rsatish bloki
     success_msg = (
         f"🎉 <b>Tabriklaymiz, siz {xom_ball}/55 ta savolga to'g'ri javob topdingiz!</b>\n\n"
         f"📊 Rasch model (2PL IRT) bo'yicha yakuniy aniqlashtirilgan balingiz va darajangiz "
@@ -339,7 +314,6 @@ async def student_get_answers(msg: Message, state: FSMContext):
     )
     await msg.answer(success_msg, reply_markup=ReplyKeyboardRemove())
     
-    # Adminga yangilangan signalni yuborish
     await auto_rasch(bot, data["test_id"], msg.from_user.id)
 
 async def main():
