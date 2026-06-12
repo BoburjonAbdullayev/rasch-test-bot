@@ -1,19 +1,4 @@
-"""
-2PL IRT TEST BOT — v8.0
-===================================================================
-Yangi funksiyalar:
-- /tests — Barcha testlar ro'yxati
-- /results KOD — Natijalar + CSV
-- /endtest KOD — Testni yopish
-- /deltest KOD — Testni o'chirish
-- /addadmin ID — Yangi admin qo'shish
-- /admins — Adminlar ro'yxati
-- Kanal chiqishi olib tashlandi
-- re ortiqcha import olib tashlandi
-- /results chunked (4096 limit)
-- Redis/MemoryStorage fallback
-===================================================================
-"""
+
 
 import asyncio
 import csv
