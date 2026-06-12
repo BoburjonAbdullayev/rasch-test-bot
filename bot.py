@@ -1,5 +1,3 @@
-
-
 import asyncio
 import json
 import logging
@@ -36,25 +34,29 @@ class Admin(StatesGroup):
     test_name = State()
     test_code = State()
     wait_keys = State()
+    excel_code = State() # Natijani olish uchun alohida holat
 
 class Student(StatesGroup):
     enter_code = State()
     enter_name = State()
     wait_answers = State()
 
-# --- MATEMATIK BILDIRGICH / NORMALIZATOR (4-MUAMMO YECHIMI) ---
+# --- MATEMATIK BILDIRGICH / NORMALIZATOR (MUKAMMAL VERSLYASI) ---
 def clean_math_expression(expr):
     """Matematik ifodalardagi ko'paytirish, bo'shliq va ortiqcha belgilarni tozalaydi"""
     if not expr: return ""
     s = str(expr).strip().lower()
-    # Bo'shliqlarni o'chirish
+    # Bo'shliqlarni butunlay yo'qotish
     s = s.replace(" ", "")
-    # LaTeX va standart ko'paytirish belgilarini o'chirish (\cdot, \times, *, \text{})
+    # LaTeX va standart ko'paytirish hamda qavs belgilarini unifikatsiya qilish
     s = s.replace(r"\cdot", "").replace("*", "").replace(r"\times", "")
-    s = s.replace("{", "").replace("}", "")
+    s = s.replace("{", "").replace("}", "").replace("(", "").replace(")", "")
+    s = s.replace("[", "").replace("]", "")
+    # Ko'p uchraydigan kasr ko'rinishlarini bir xillashtirish
+    s = s.replace(r"\frac", "")
     return s
 
-# --- BAZA ---
+# --- BAZA INTEGRATSIYASI ---
 def db_init():
     con = sqlite3.connect(DB)
     con.executescript("""
@@ -90,7 +92,7 @@ def db_run(q, p=()):
     except Exception as e: con.rollback(); con.close(); raise e
     con.close(); return lid
 
-# --- IRT RASCH ALGORITMI ---
+# --- IRT RASCH ALGORITMI (HIMOYA LANGAN) ---
 def prob_2pl(theta, alpha, beta):
     return 1.0 / (1.0 + np.exp(-alpha * (theta - beta)))
 
@@ -123,15 +125,25 @@ def irt_2pl_calc(matrix_list):
     n_s, n_q = matrix.shape
     alpha, beta = estimate_2pl_parameters(matrix)
     thetas = [eap_theta_2pl(matrix[s], alpha, beta) for s in range(n_s)]
-    thetas = np.array(thetas); mu = np.mean(thetas); sigma = np.std(thetas, ddof=1) if n_s > 1 else 1.0
+    thetas = np.array(thetas)
+    
+    # Kutilmagan crashlardan himoya (ddof=0 xavfsiz hisoblash uchun)
+    mu = np.mean(thetas)
+    sigma = np.std(thetas, ddof=0) 
     if sigma == 0: sigma = 1.0
+    
     z_scores = (thetas - mu) / sigma
     t_scores = np.clip(50 + 10 * z_scores, 0.0, 100.0)
     return [{"xom": int(np.sum(matrix[s])), "overall": round(t_scores[s], 2)} for s in range(n_s)]
 
 def daraja(v):
     if v is None: return "—"
-    if v >= 70: return "A+"; if v >= 65: return "A"; if v >= 60: return "B+"; if v >= 55: return "B"; if v >= 50: return "C+"; if v >= 46: return "C"
+    if v >= 70: return "A+"
+    if v >= 65: return "A"
+    if v >= 60: return "B+"
+    if v >= 55: return "B"
+    if v >= 50: return "C+"
+    if v >= 46: return "C"
     return "Failed"
 
 bot = Bot(token=TOKEN, default=DefaultBotProperties(parse_mode="HTML"))
@@ -141,7 +153,7 @@ dp = Dispatcher(storage=MemoryStorage())
 @dp.message(Command("start"), F.from_user.id == ADMIN_ID)
 async def admin_start(msg: Message, state: FSMContext):
     await state.clear()
-    await msg.answer("👋 <b>Admin panelga xush kelibsiz!</b>\n\n/newtest — Yangi elektron test yaratish\n/excel — Natijalarni yuklab olish")
+    await msg.answer("👋 <b>Admin panelga xush kelibsiz!</b>\n\n/newtest — Yangi elektron test yaratish\n/excel — Excel formatda hisobot yuklab olish")
 
 @dp.message(Command("newtest"), F.from_user.id == ADMIN_ID)
 async def admin_newtest(msg: Message, state: FSMContext):
@@ -163,7 +175,7 @@ async def admin_got_code(msg: Message, state: FSMContext):
     await state.set_state(Admin.wait_keys)
     
     kb = ReplyKeyboardMarkup(keyboard=[[KeyboardButton(text="🧮 Kalitlarni Saytda kiritish", web_app=WebAppInfo(url=WEB_APP_URL))]], resize_keyboard=True)
-    await msg.answer("👇 Pastdagi tugmani bosib, ushbu test uchun **to'g'ri kalitlarni** kiritib yuboring:", reply_markup=kb)
+    await msg.answer("👇 Pastdagi tugmani bosib, ushbu test uchun <b>to'g'ri kalitlarni</b> kiritib yuboring:", reply_markup=kb)
 
 @dp.message(Admin.wait_keys, F.web_app_data)
 async def admin_save_keys(msg: Message, state: FSMContext):
@@ -171,31 +183,43 @@ async def admin_save_keys(msg: Message, state: FSMContext):
     web_data = json.loads(msg.web_app_data.data)
     
     final_keys = web_data["closed_answers"] + web_data["open_answers"]
+    # Kalitlarni tozalab saqlash
+    final_keys = [str(k).strip() for k in final_keys]
+    
     db_run("INSERT INTO tests (code, name, n_questions, answer_key) VALUES (?, ?, 55, ?)", (data["test_code"], data["test_name"], json.dumps(final_keys)))
     await state.clear()
     
     promo_text = (
-        f"✅️<b>Test ishlanishga tayyor</b>\n"
-        f"🗒Test nomi: {data['test_name']}\n"
-        f"🔢Testlar soni: 55 ta (1-35 ABCD, 36-45 a/b ochiq)\n"
-        f"‼️Test kodi: <code>{data['test_code']}</code>\n"
-        f"👤Test yaratuvchisi: Abdullayev Boburjon\n\n"
+        f"✅ <b>Test ishlanishga tayyor</b>\n"
+        f"🗒 Test nomi: {data['test_name']}\n"
+        f"🔢 Testlar soni: 55 ta (1-35 ABCD, 36-45 a/b ochiq)\n"
+        f"‼️ Test kodi: <code>{data['test_code']}</code>\n"
+        f"👤 Test yaratuvchisi: Abdullayev Boburjon\n\n"
         f"Test javoblaringizni quyidagi botga jo'nating:\n"
         f"👉 @mirt_2pl_calc_bot\n\n"
-        f"📌 Testda qatnashish uchun @mirt_2pl_calc_bot ga kirib test kodini yuboring.\n\n"
-        f"♻️Test ishlanishga tayyor!!!"
+        f"📌 Testda qatnashish uchun botga kirib test kodini yuboring."
     )
     await msg.answer(promo_text, reply_markup=ReplyKeyboardRemove())
 
-# --- EXCEL EXPORT ---
+# --- EXCEL EXPORT (YANGILANGAN VA XAVFSIZ) ---
 @dp.message(Command("excel"), F.from_user.id == ADMIN_ID)
-async def export_to_excel(msg: Message):
-    tests = db_get("SELECT * FROM tests WHERE is_active=1 LIMIT 1")
-    if not tests: await msg.answer("❌ Faol test topilmadi."); return
-    
+async def export_excel_start(msg: Message, state: FSMContext):
+    await state.clear()
+    await state.set_state(Admin.excel_code)
+    await msg.answer("📊 <b>Qaysi test natijalarini yuklamoqchisiz?</b>\nIltimos, test kodini yuboring (Masalan: MAT55):")
+
+@dp.message(Admin.excel_code, F.from_user.id == ADMIN_ID)
+async def export_to_excel_process(msg: Message, state: FSMContext):
+    code = msg.text.strip().upper().replace(" ", "")
+    tests = db_get("SELECT * FROM tests WHERE code=?", (code,))
+    if not tests:
+        await msg.answer("❌ Bunday kodli test topilmadi. Qayta urinib ko'ring:"); return
+        
     test_id = tests[0]["id"]
+    test_name = tests[0]["name"]
     resp = db_get("SELECT full_name, binary_str FROM responses WHERE test_id=? ORDER BY rowid", (test_id,))
-    if not resp: await msg.answer("❌ Hali javoblar yo'q."); return
+    if not resp: 
+        await msg.answer("❌ Ushbu testga hali hech kim javob topshirmagan."); await state.clear(); return
         
     matrix = [json.loads(r["binary_str"]) for r in resp]
     results = irt_2pl_calc(matrix)
@@ -211,25 +235,26 @@ async def export_to_excel(msg: Message):
         })
         
     df = pd.DataFrame(excel_data)
-    file_path = "Rasch_Natijalar.xlsx"
+    file_path = f"Rasch_Natijalar_{code}.xlsx"
     df.to_excel(file_path, index=False)
-    await msg.answer_document(FSInputFile(file_path), caption="📊 Yangilangan mukammal Excel hisoboti.")
+    await msg.answer_document(FSInputFile(file_path), caption=f"📊 <b>{test_name}</b> ({code}) testi bo'yicha mukammal Rasch IRT hisoboti.")
+    await state.clear()
     if os.path.exists(file_path): os.remove(file_path)
 
 # --- STUDENT PROCESS ---
 @dp.message(Command("start"), F.from_user.id != ADMIN_ID)
 async def student_start(msg: Message, state: FSMContext):
     await state.clear(); await state.set_state(Student.enter_code)
-    await msg.answer("👋 Xush kelibsiz! Iltimos, faol **Test kodini** kiriting:")
+    await msg.answer("👋 Xush kelibsiz! Iltimos, faol <b>Test kodini</b> kiriting:")
 
 @dp.message(Student.enter_code)
 async def student_code(msg: Message, state: FSMContext):
-    code = msg.text.strip().upper()
+    code = msg.text.strip().upper().replace(" ", "")
     rows = db_get("SELECT * FROM tests WHERE code=? AND is_active=1", (code,))
-    if not rows: await msg.answer("❌ Kod noto'g'ri. Qaytadan urinib ko'ring:"); return
+    if not rows: await msg.answer("❌ Kod noto'g'ri yoki faol emas. Qaytadan urinib ko'ring:"); return
     t = rows[0]
     if db_get("SELECT id FROM responses WHERE test_id=? AND tg_id=?", (t["id"], msg.from_user.id)):
-        await msg.answer("⚠️ Siz bu testni topshirib bo'lgansiz."); return
+        await msg.answer("⚠️ Siz bu testni topshirib bo'lgansiz."); await state.clear(); return
     await state.update_data(test_id=t["id"], test_name=t["name"], answer_key=t["answer_key"])
     await state.set_state(Student.enter_name)
     await msg.answer("📝 To'liq ism-familiyangizni kiriting:")
@@ -256,14 +281,13 @@ async def student_get_answers(msg: Message, state: FSMContext):
     
     for i in range(55):
         s_ans = stud_answers[i].strip() if i < len(stud_answers) else ""
-        k_ans = test_keys[i].strip()
+        k_ans = test_keys[i].strip() if i < len(test_keys) else ""
         
         is_correct = False
         if i < CLOSED_COUNT:
             if s_ans.upper() == k_ans.upper() and s_ans not in ["—", ""]:
                 is_correct = True
         else:
-            # 3x va 3*x muammolarini yo'qotish uchun normalizatsiya filtri
             if clean_math_expression(s_ans) == clean_math_expression(k_ans) and s_ans != "":
                 is_correct = True
                 
@@ -277,8 +301,8 @@ async def student_get_answers(msg: Message, state: FSMContext):
     await state.clear()
     
     await msg.answer(
-        f"🎉 <b>Tabriklaymiz siz {correct_count}/55 ta topdingiz.</b>\n\n"
-        f"Rasch bo'yicha olgan balingiz Admin tomonidan keyinroq e'lon qilinadi.",
+        f"🎉 <b>Tabriklaymiz siz {correct_count}/55 ta to'g'ri topdingiz.</b>\n\n"
+        f"Rasch modeli bo'yicha yakuniy balingiz va darajangiz imtihon yakunlangach admin tomonidan e'lon qilinadi.",
         reply_markup=ReplyKeyboardRemove()
     )
 
