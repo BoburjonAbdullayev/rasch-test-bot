@@ -1,2 +1,4 @@
-aiogram==3.7.0
+aiogram
 numpy
+pandas
+openpyxl
