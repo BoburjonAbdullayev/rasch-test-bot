@@ -40,7 +40,7 @@ class S2(StatesGroup):
     s3 = State()
 
 def clean_math_expression(expr):
-    if not expr: return ""
+    if expr is None: return ""
     s = str(expr).strip().lower()
     s = s.replace(" ", "")
     s = s.replace(r"\cdot", "").replace("*", "").replace(r"\times", "")
@@ -261,12 +261,16 @@ async def export_to_excel_process(msg: Message, state: FSMContext):
 
         excel_data = []
         for i, r in enumerate(resp):
+            # Xavfsiz tekshiruv (Index error oldini olish uchun)
+            xom_score = results[i]["xom"] if (i < len(results) and results[i]) else 0
+            overall_score = results[i]["overall"] if (i < len(results) and results[i]) else 0.0
+            
             excel_data.append({
                 "ID":             i + 1,
                 "F.I.O":          r["full_name"],
-                "Natija (Xom)":   results[i]["xom"],
-                "Natija (Baho)":  results[i]["overall"],
-                "Daraja":         get_grade(results[i]["overall"])
+                "Natija (Xom)":   xom_score,
+                "Natija (Baho)":  overall_score,
+                "Daraja":         get_grade(overall_score)
             })
 
         df        = pd.DataFrame(excel_data)
@@ -294,7 +298,7 @@ async def student_start(msg: Message, state: FSMContext):
 async def student_code(msg: Message, state: FSMContext):
     code = msg.text.strip().upper().replace(" ", "")
     rows = db_get("SELECT * FROM tests WHERE code=? AND is_active=1", (code,))
-    if (!rows):
+    if not rows:  # TUZATILDI: ! belgisi not so'ziga almashtirildi
         await msg.answer("❌ Noto'g'ri kod. Qayta urinib ko'ring:"); return
     t = rows[0]
     if db_get("SELECT id FROM responses WHERE test_id=? AND tg_id=?", (t["id"], msg.from_user.id)):
