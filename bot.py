@@ -1,9 +1,3 @@
-"""
-2PL IRT TEST BOT — v6.6 (MATEMATIK FILTRLANGAN VERSIYA)
-===================================================================
-Railway serveri uchun maxsus mukammallashtirilgan nusxa.
-35 ta ABCD, 20 ta ochiq (36a-45b) savollar tizimi.
-"""
 
 import asyncio
 import json
@@ -29,7 +23,7 @@ from aiogram.types import (
 logging.basicConfig(level=logging.INFO, format="%(asctime)s [%(levelname)s] %(message)s")
 log = logging.getLogger(__name__)
 
-TOKEN = "8940355412:AAGgFXKlMt0MSfA0RVYH2gMq0d8C0MX37FU"
+TOKEN = "8940355412:AAG_xEeZmhgtMURWpfaNIB3cfaBuxY8qBdw"
 ADMIN_ID = 880108541
 WEB_APP_URL = "https://boburjonabdullayev.github.io/test-platform/" 
 
