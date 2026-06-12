@@ -24,8 +24,7 @@ log = logging.getLogger(__name__)
 
 TOKEN = os.environ.get("BOT_TOKEN")
 ADMIN_ID = 880108541
-WEB_APP_URL = "https://boburjonabdullayev.github.io/test-platform/" 
-
+WEB_APP_URL = "https://boburjonabdullayev.github.io/test-platform2/"
 TOTAL_QUESTIONS = 55
 CLOSED_COUNT = 35  # ABCD savollar 35 ta
 DB = "rasch_bot.db"
