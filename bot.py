@@ -22,7 +22,7 @@ from aiogram.types import (
 logging.basicConfig(level=logging.INFO, format="%(asctime)s [%(levelname)s] %(message)s")
 log = logging.getLogger(__name__)
 
-TOKEN = "8940355412:AAG_xEeZmhgtMURWpfaNIB3cfaBuxY8qBdw"
+TOKEN = os.environ.get("BOT_TOKEN")
 ADMIN_ID = 880108541
 WEB_APP_URL = "https://boburjonabdullayev.github.io/test-platform/" 
 
