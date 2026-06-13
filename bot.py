@@ -1,5 +1,3 @@
-
-
 import asyncio
 import csv
 import json
@@ -7,6 +5,8 @@ import logging
 import math
 import os
 import sqlite3
+import time
+from contextlib import closing
 import numpy as np
 import pandas as pd
 
@@ -66,55 +66,81 @@ def clean_math_expression(expr):
 
 # ── DB ────────────────────────────────────────────────────────────────────
 def db_init():
-    con = sqlite3.connect(DB)
-    con.executescript("""
-    CREATE TABLE IF NOT EXISTS tests (
-        id          INTEGER PRIMARY KEY AUTOINCREMENT,
-        code        TEXT NOT NULL UNIQUE,
-        name        TEXT NOT NULL,
-        n_questions INTEGER NOT NULL DEFAULT 55,
-        answer_key  TEXT NOT NULL,
-        is_active   INTEGER DEFAULT 1,
-        created_at  TEXT DEFAULT (datetime('now','localtime'))
-    );
-    CREATE TABLE IF NOT EXISTS responses (
-        id          INTEGER PRIMARY KEY AUTOINCREMENT,
-        test_id     INTEGER NOT NULL,
-        tg_id       INTEGER NOT NULL,
-        full_name   TEXT NOT NULL,
-        raw_answers TEXT NOT NULL,
-        binary_str  TEXT NOT NULL,
-        submitted_at TEXT DEFAULT (datetime('now','localtime')),
-        UNIQUE(test_id, tg_id)
-    );
-    CREATE TABLE IF NOT EXISTS admins (
-        id      INTEGER PRIMARY KEY AUTOINCREMENT,
-        tg_id   INTEGER NOT NULL UNIQUE,
-        added_at TEXT DEFAULT (datetime('now','localtime'))
-    );
-    """)
-    # Asosiy adminni qo'shish
-    try:
-        con.execute("INSERT OR IGNORE INTO admins (tg_id) VALUES (?)", (ADMIN_ID,))
-        con.commit()
-    except: pass
-    con.close()
+    with closing(sqlite3.connect(DB, timeout=30)) as con:
+        # FIX #2 (universal/xavfsiz): avval WAL rejimini yoqishga harakat
+        # qilamiz - bu eng yaxshi parallel ishlash imkonini beradi. Lekin
+        # ba'zi hosting muhitlarida (read-only fayl tizimi va h.k.) WAL
+        # uchun qo'shimcha fayl (-wal, -shm) yaratish imkoni bo'lmasligi
+        # mumkin. Shu sabab bu yerda xato chiqsa, jim ravishda standart
+        # (DELETE) journal rejimiga qaytamiz - bot baribir ishlayveradi,
+        # faqat parallel yozish biroz sekinroq bo'ladi.
+        try:
+            con.execute("PRAGMA journal_mode=WAL;")
+        except Exception as e:
+            log.warning(f"WAL rejimi yoqilmadi, standart rejimda davom etiladi: {e}")
+        # busy_timeout - agar baza vaqtincha band bo'lsa, xato qaytarish
+        # o'rniga belgilangan vaqt kutib turadi. Bu har doim xavfsiz.
+        con.execute("PRAGMA busy_timeout=30000;")
+        con.executescript("""
+        CREATE TABLE IF NOT EXISTS tests (
+            id          INTEGER PRIMARY KEY AUTOINCREMENT,
+            code        TEXT NOT NULL UNIQUE,
+            name        TEXT NOT NULL,
+            n_questions INTEGER NOT NULL DEFAULT 55,
+            answer_key  TEXT NOT NULL,
+            is_active   INTEGER DEFAULT 1,
+            created_at  TEXT DEFAULT (datetime('now','localtime'))
+        );
+        CREATE TABLE IF NOT EXISTS responses (
+            id          INTEGER PRIMARY KEY AUTOINCREMENT,
+            test_id     INTEGER NOT NULL,
+            tg_id       INTEGER NOT NULL,
+            full_name   TEXT NOT NULL,
+            raw_answers TEXT NOT NULL,
+            binary_str  TEXT NOT NULL,
+            submitted_at TEXT DEFAULT (datetime('now','localtime')),
+            UNIQUE(test_id, tg_id)
+        );
+        CREATE TABLE IF NOT EXISTS admins (
+            id      INTEGER PRIMARY KEY AUTOINCREMENT,
+            tg_id   INTEGER NOT NULL UNIQUE,
+            added_at TEXT DEFAULT (datetime('now','localtime'))
+        );
+        """)
+        # Asosiy adminni qo'shish
+        try:
+            con.execute("INSERT OR IGNORE INTO admins (tg_id) VALUES (?)", (ADMIN_ID,))
+            con.commit()
+        except Exception:
+            pass
 
 def db_get(q, p=()):
-    con = sqlite3.connect(DB)
-    con.row_factory = sqlite3.Row
-    rows = con.execute(q, p).fetchall()
-    con.close()
+    # FIX #2: timeout qo'shildi - baza band bo'lsa darrov xato bermay,
+    # belgilangan vaqt davomida kutib turadi.
+    # FIX #3: closing() - xato chiqsa ham connection albatta
+    # to'liq yopiladi (oddiy 'with sqlite3.connect()' faqat
+    # commit/rollback qiladi, faylni yopmaydi - shu sabab
+    # closing() ishlatilgan).
+    with closing(sqlite3.connect(DB, timeout=30)) as con:
+        con.row_factory = sqlite3.Row
+        rows = con.execute(q, p).fetchall()
     return rows
 
 def db_run(q, p=()):
-    con = sqlite3.connect(DB)
-    try:
-        lid = con.execute(q, p).lastrowid
-        con.commit()
-    except Exception as e:
-        con.rollback(); con.close(); raise e
-    con.close()
+    # FIX #2: timeout qo'shildi - "database is locked" xatosi
+    # kamayadi, chunki SQLite avtomatik ravishda biroz kutib,
+    # qayta urinadi.
+    # FIX #3: closing() - xato chiqsa ham connection albatta
+    # to'liq yopiladi. Xato yuqoriga (chaqiruvchiga) uzatiladi,
+    # shunda handlerlar uni try/except orqali tutib, foydalanuvchiga
+    # mos xabar bera oladi.
+    with closing(sqlite3.connect(DB, timeout=30)) as con:
+        try:
+            lid = con.execute(q, p).lastrowid
+            con.commit()
+        except Exception:
+            con.rollback()
+            raise
     return lid
 
 def is_admin(tg_id: int) -> bool:
@@ -230,10 +256,22 @@ async def admin_save_keys(msg: Message, state: FSMContext):
     web_data = json.loads(msg.web_app_data.data)
     final_keys = web_data["closed_answers"] + web_data["open_answers"]
     final_keys = [str(k).strip() for k in final_keys]
-    db_run(
-        "INSERT INTO tests (code, name, n_questions, answer_key) VALUES (?, ?, 55, ?)",
-        (data["test_code"], data["test_name"], json.dumps(final_keys))
-    )
+    # FIX #7: bazaga yozish try/except ichiga olindi - agar xato
+    # bo'lsa, admin "test yaratildi" deb noto'g'ri xabar olmaydi.
+    try:
+        db_run(
+            "INSERT INTO tests (code, name, n_questions, answer_key) VALUES (?, ?, 55, ?)",
+            (data["test_code"], data["test_name"], json.dumps(final_keys))
+        )
+    except Exception as e:
+        log.error(f"Test saqlashda xato: {e}")
+        await msg.answer(
+            "❌ Testni saqlashda xatolik yuz berdi. Qaytadan /newtest buyrug'ini bering.",
+            reply_markup=ReplyKeyboardRemove()
+        )
+        await state.clear()
+        return
+
     await state.clear()
     await msg.answer(
         f"✅ <b>Test ishlanishga tayyor</b>\n"
@@ -407,15 +445,29 @@ async def export_to_excel_process(msg: Message, state: FSMContext):
             "Darajasi": daraja(results[i]["overall"])
         })
     df = pd.DataFrame(excel_data)
-    file_path = f"Rasch_Natijalar_{code}.xlsx"
-    df.to_excel(file_path, index=False)
-    await msg.answer_document(
-        FSInputFile(file_path),
-        caption=f"📊 <b>{test_name}</b> ({code}) — Rasch IRT hisoboti."
-    )
-    await state.clear()
-    if os.path.exists(file_path):
-        os.remove(file_path)
+
+    # FIX #6: fayl nomiga admin ID va vaqt belgisi (mikrosekund
+    # aniqligida) qo'shildi - ikki admin (yoki bir admin ketma-ket)
+    # bir vaqtda /excel chaqirsa, fayllar bir-birining ustidan
+    # yozilmaydi va o'chirilmaydi.
+    file_path = f"Rasch_Natijalar_{code}_{msg.from_user.id}_{int(time.time()*1_000_000)}.xlsx"
+
+    # FIX #7: fayl yaratish/yuborish try/except ichiga olindi -
+    # xato bo'lsa, admin xabarsiz qolmaydi va eskirgan holat
+    # (state) tozalanadi.
+    try:
+        df.to_excel(file_path, index=False)
+        await msg.answer_document(
+            FSInputFile(file_path),
+            caption=f"📊 <b>{test_name}</b> ({code}) — Rasch IRT hisoboti."
+        )
+    except Exception as e:
+        log.error(f"Excel yuborishda xato: {e}")
+        await msg.answer("❌ Excel faylini tayyorlashda xatolik yuz berdi. Qaytadan urinib ko'ring.")
+    finally:
+        await state.clear()
+        if os.path.exists(file_path):
+            os.remove(file_path)
 
 # ══════════════════════════════════════════════════════════════════════════
 # STUDENT HANDLERS
@@ -486,10 +538,34 @@ async def student_get_answers(msg: Message, state: FSMContext):
         else:
             binary.append(0)
 
-    db_run(
-        "INSERT OR IGNORE INTO responses (test_id, tg_id, full_name, raw_answers, binary_str) VALUES (?, ?, ?, ?, ?)",
-        (data["test_id"], msg.from_user.id, data["full_name"], json.dumps(stud_answers), json.dumps(binary))
-    )
+    # FIX #3 + #7: bazaga yozish try/except ichiga olindi.
+    # Agar UNIQUE(test_id, tg_id) cheklovi tufayli xato chiqsa
+    # (ya'ni shu odam aynan shu lahzada ikkinchi marta yuborgan),
+    # bu holat aniq aniqlanadi va foydalanuvchiga to'g'ri xabar
+    # beriladi - "tabriklaymiz" xabari noto'g'ri chiqmaydi.
+    try:
+        db_run(
+            "INSERT INTO responses (test_id, tg_id, full_name, raw_answers, binary_str) VALUES (?, ?, ?, ?, ?)",
+            (data["test_id"], msg.from_user.id, data["full_name"], json.dumps(stud_answers), json.dumps(binary))
+        )
+    except sqlite3.IntegrityError:
+        # Bu odam allaqachon (masalan, bir necha millisekund oldin)
+        # javob yuborgan - dublikat saqlanmadi.
+        await state.clear()
+        await msg.answer(
+            "⚠️ Siz bu testni allaqachon topshirib bo'lgansiz. Javobingiz oldin saqlangan.",
+            reply_markup=ReplyKeyboardRemove()
+        )
+        return
+    except Exception as e:
+        log.error(f"Javobni saqlashda xato: {e}")
+        await msg.answer(
+            "❌ Javobingizni saqlashda xatolik yuz berdi. Iltimos, qaytadan urinib ko'ring "
+            "yoki admin bilan bog'laning.",
+            reply_markup=ReplyKeyboardRemove()
+        )
+        return
+
     await state.clear()
     await msg.answer(
         f"🎉 <b>Tabriklaymiz, {data['full_name']}!</b>\n\n"
