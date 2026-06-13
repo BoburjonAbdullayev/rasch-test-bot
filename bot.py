@@ -126,7 +126,7 @@ def db_run(q, p=()):
 def is_admin(tg_id: int) -> bool:
     return bool(db_get("SELECT 1 FROM admins WHERE tg_id=?", (tg_id,)))
 
-# ── IRT 2PL (o'zgartirilmagan) ────────────────────────────────────────────
+# ── IRT 2PL ────────────────────────────────────────────────────────────────
 def prob_2pl(theta, alpha, beta):
     return 1.0 / (1.0 + np.exp(-alpha * (theta - beta)))
 
@@ -161,7 +161,8 @@ def irt_2pl_calc(matrix_list):
     thetas = [eap_theta_2pl(matrix[s], alpha, beta) for s in range(n_s)]
     thetas = np.array(thetas)
     mu = np.mean(thetas)
-    sigma = np.std(thetas, ddof=0)
+    # ✅ TUZATISH 1: ddof=0 → ddof=1 (HTML bilan bir xil)
+    sigma = np.std(thetas, ddof=1)
     if sigma == 0: sigma = 1.0
     z_scores = (thetas - mu) / sigma
     t_scores = np.clip(50 + 10 * z_scores, 0.0, 100.0)
@@ -295,6 +296,7 @@ async def admin_results(msg: Message):
         return
 
     matrix  = [json.loads(r["binary_str"]) for r in resp]
+    # ✅ TUZATISH 2: irt_2pl_calc bir marta chaqiriladi
     results = irt_2pl_calc(matrix)
 
     lines = [f"📊 <b>{test_name}</b> (<code>{code}</code>) — {len(resp)} ta ishtirokchi\n"]
@@ -313,6 +315,7 @@ async def admin_results(msg: Message):
     if chunk:
         await msg.answer("\n".join(chunk))
 
+    # ✅ TUZATISH 2: results qayta hisoblanmaydi, yuqoridagi results ishlatiladi
     buf = io.StringIO()
     writer = csv.writer(buf)
     writer.writerow(["#", "Ism Familiya", "To'g'ri javoblar", "Rasch bali", "Daraja", "Sana"])
@@ -386,7 +389,7 @@ async def admin_admins(msg: Message):
         lines.append(f"{i+1}. <code>{r['tg_id']}</code> — {r['added_at'][:10]}")
     await msg.answer("\n".join(lines))
 
-# ── /excel KOD (eski funksiya saqlanadi) ──────────────────────────────────
+# ── /excel KOD ──────────────────────────────────────────────────────────
 @dp.message(Command("excel"), F.func(AdminFilter))
 async def export_excel_start(msg: Message, state: FSMContext):
     await state.clear()
