@@ -1,5 +1,6 @@
 import asyncio
 import csv
+import io
 import json
 import logging
 import math
@@ -34,7 +35,9 @@ logging.basicConfig(level=logging.INFO, format="%(asctime)s [%(levelname)s] %(me
 log = logging.getLogger(__name__)
 
 TOKEN    = os.environ.get("BOT_TOKEN")
-ADMIN_ID = int(os.environ.get("ADMIN_IDS", "880108541"))
+if not TOKEN:
+    raise RuntimeError("BOT_TOKEN environment variable o'rnatilmagan!")
+ADMIN_ID = int(os.environ.get("ADMIN_IDS", "0"))
 WEB_APP_URL = "https://boburjonabdullayev.github.io/test-platform2/"
 
 TOTAL_QUESTIONS = 55
@@ -67,19 +70,10 @@ def clean_math_expression(expr):
 # ── DB ────────────────────────────────────────────────────────────────────
 def db_init():
     with closing(sqlite3.connect(DB, timeout=30)) as con:
-        # FIX #2 (universal/xavfsiz): avval WAL rejimini yoqishga harakat
-        # qilamiz - bu eng yaxshi parallel ishlash imkonini beradi. Lekin
-        # ba'zi hosting muhitlarida (read-only fayl tizimi va h.k.) WAL
-        # uchun qo'shimcha fayl (-wal, -shm) yaratish imkoni bo'lmasligi
-        # mumkin. Shu sabab bu yerda xato chiqsa, jim ravishda standart
-        # (DELETE) journal rejimiga qaytamiz - bot baribir ishlayveradi,
-        # faqat parallel yozish biroz sekinroq bo'ladi.
         try:
             con.execute("PRAGMA journal_mode=WAL;")
         except Exception as e:
             log.warning(f"WAL rejimi yoqilmadi, standart rejimda davom etiladi: {e}")
-        # busy_timeout - agar baza vaqtincha band bo'lsa, xato qaytarish
-        # o'rniga belgilangan vaqt kutib turadi. Bu har doim xavfsiz.
         con.execute("PRAGMA busy_timeout=30000;")
         con.executescript("""
         CREATE TABLE IF NOT EXISTS tests (
@@ -107,7 +101,6 @@ def db_init():
             added_at TEXT DEFAULT (datetime('now','localtime'))
         );
         """)
-        # Asosiy adminni qo'shish
         try:
             con.execute("INSERT OR IGNORE INTO admins (tg_id) VALUES (?)", (ADMIN_ID,))
             con.commit()
@@ -115,25 +108,12 @@ def db_init():
             pass
 
 def db_get(q, p=()):
-    # FIX #2: timeout qo'shildi - baza band bo'lsa darrov xato bermay,
-    # belgilangan vaqt davomida kutib turadi.
-    # FIX #3: closing() - xato chiqsa ham connection albatta
-    # to'liq yopiladi (oddiy 'with sqlite3.connect()' faqat
-    # commit/rollback qiladi, faylni yopmaydi - shu sabab
-    # closing() ishlatilgan).
     with closing(sqlite3.connect(DB, timeout=30)) as con:
         con.row_factory = sqlite3.Row
         rows = con.execute(q, p).fetchall()
     return rows
 
 def db_run(q, p=()):
-    # FIX #2: timeout qo'shildi - "database is locked" xatosi
-    # kamayadi, chunki SQLite avtomatik ravishda biroz kutib,
-    # qayta urinadi.
-    # FIX #3: closing() - xato chiqsa ham connection albatta
-    # to'liq yopiladi. Xato yuqoriga (chaqiruvchiga) uzatiladi,
-    # shunda handlerlar uni try/except orqali tutib, foydalanuvchiga
-    # mos xabar bera oladi.
     with closing(sqlite3.connect(DB, timeout=30)) as con:
         try:
             lid = con.execute(q, p).lastrowid
@@ -256,12 +236,10 @@ async def admin_save_keys(msg: Message, state: FSMContext):
     web_data = json.loads(msg.web_app_data.data)
     final_keys = web_data["closed_answers"] + web_data["open_answers"]
     final_keys = [str(k).strip() for k in final_keys]
-    # FIX #7: bazaga yozish try/except ichiga olindi - agar xato
-    # bo'lsa, admin "test yaratildi" deb noto'g'ri xabar olmaydi.
     try:
         db_run(
-            "INSERT INTO tests (code, name, n_questions, answer_key) VALUES (?, ?, 55, ?)",
-            (data["test_code"], data["test_name"], json.dumps(final_keys))
+            "INSERT INTO tests (code, name, n_questions, answer_key) VALUES (?, ?, ?, ?)",
+            (data["test_code"], data["test_name"], TOTAL_QUESTIONS, json.dumps(final_keys))
         )
     except Exception as e:
         log.error(f"Test saqlashda xato: {e}")
@@ -319,12 +297,10 @@ async def admin_results(msg: Message):
     matrix  = [json.loads(r["binary_str"]) for r in resp]
     results = irt_2pl_calc(matrix)
 
-    # Matnli xulosa
     lines = [f"📊 <b>{test_name}</b> (<code>{code}</code>) — {len(resp)} ta ishtirokchi\n"]
     for i, r in enumerate(resp):
         d = daraja(results[i]["overall"])
-        lines.append(f"{i+1}. {r['full_name']} — {results[i]['xom']}/55 | {results[i]['overall']} bal | {d}")
-    # Xabarni 3800 belgidan oshsa bo'laklarga bo'lib yuborish
+        lines.append(f"{i+1}. {r['full_name']} — {results[i]['xom']}/{tests[0]['n_questions']} | {results[i]['overall']} bal | {d}")
     chunk = []
     chunk_len = 0
     for line in lines:
@@ -337,8 +313,6 @@ async def admin_results(msg: Message):
     if chunk:
         await msg.answer("\n".join(chunk))
 
-    # CSV fayl
-    import io
     buf = io.StringIO()
     writer = csv.writer(buf)
     writer.writerow(["#", "Ism Familiya", "To'g'ri javoblar", "Rasch bali", "Daraja", "Sana"])
@@ -446,15 +420,8 @@ async def export_to_excel_process(msg: Message, state: FSMContext):
         })
     df = pd.DataFrame(excel_data)
 
-    # FIX #6: fayl nomiga admin ID va vaqt belgisi (mikrosekund
-    # aniqligida) qo'shildi - ikki admin (yoki bir admin ketma-ket)
-    # bir vaqtda /excel chaqirsa, fayllar bir-birining ustidan
-    # yozilmaydi va o'chirilmaydi.
     file_path = f"Rasch_Natijalar_{code}_{msg.from_user.id}_{int(time.time()*1_000_000)}.xlsx"
 
-    # FIX #7: fayl yaratish/yuborish try/except ichiga olindi -
-    # xato bo'lsa, admin xabarsiz qolmaydi va eskirgan holat
-    # (state) tozalanadi.
     try:
         df.to_excel(file_path, index=False)
         await msg.answer_document(
@@ -494,7 +461,7 @@ async def student_code(msg: Message, state: FSMContext):
         await msg.answer("⚠️ Siz bu testni allaqachon topshirib bo'lgansiz.")
         await state.clear()
         return
-    await state.update_data(test_id=t["id"], test_name=t["name"], answer_key=t["answer_key"])
+    await state.update_data(test_id=t["id"], test_name=t["name"], answer_key=t["answer_key"], n_questions=t["n_questions"])
     await state.set_state(Student.enter_name)
     await msg.answer("📝 To'liq ism-familiyangizni kiriting:")
 
@@ -519,11 +486,12 @@ async def student_get_answers(msg: Message, state: FSMContext):
 
     stud_answers = web_data["closed_answers"] + web_data["open_answers"]
     test_keys    = json.loads(data["answer_key"])
+    n_questions  = data["n_questions"]
 
     binary = []
     correct_count = 0
 
-    for i in range(55):
+    for i in range(n_questions):
         s_ans = stud_answers[i].strip() if i < len(stud_answers) else ""
         k_ans = test_keys[i].strip()    if i < len(test_keys)    else ""
         is_correct = False
@@ -538,19 +506,12 @@ async def student_get_answers(msg: Message, state: FSMContext):
         else:
             binary.append(0)
 
-    # FIX #3 + #7: bazaga yozish try/except ichiga olindi.
-    # Agar UNIQUE(test_id, tg_id) cheklovi tufayli xato chiqsa
-    # (ya'ni shu odam aynan shu lahzada ikkinchi marta yuborgan),
-    # bu holat aniq aniqlanadi va foydalanuvchiga to'g'ri xabar
-    # beriladi - "tabriklaymiz" xabari noto'g'ri chiqmaydi.
     try:
         db_run(
             "INSERT INTO responses (test_id, tg_id, full_name, raw_answers, binary_str) VALUES (?, ?, ?, ?, ?)",
             (data["test_id"], msg.from_user.id, data["full_name"], json.dumps(stud_answers), json.dumps(binary))
         )
     except sqlite3.IntegrityError:
-        # Bu odam allaqachon (masalan, bir necha millisekund oldin)
-        # javob yuborgan - dublikat saqlanmadi.
         await state.clear()
         await msg.answer(
             "⚠️ Siz bu testni allaqachon topshirib bo'lgansiz. Javobingiz oldin saqlangan.",
@@ -569,7 +530,7 @@ async def student_get_answers(msg: Message, state: FSMContext):
     await state.clear()
     await msg.answer(
         f"🎉 <b>Tabriklaymiz, {data['full_name']}!</b>\n\n"
-        f"✅ To'g'ri javoblar: <b>{correct_count}/55</b>\n\n"
+        f"✅ To'g'ri javoblar: <b>{correct_count}/{n_questions}</b>\n\n"
         f"📊 Rasch modeli bo'yicha yakuniy balingiz imtihon yakunlangach admin tomonidan e'lon qilinadi.",
         reply_markup=ReplyKeyboardRemove()
     )
